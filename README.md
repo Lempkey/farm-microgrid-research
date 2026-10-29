@@ -53,6 +53,33 @@ Each experiment's decision rule was written down before its results were seen.
 - **Weather is regional.** NASA POWER solar data sit on a 1° grid, so they are not a site
   measurement.
 
+## Scope and known simplifications
+
+This is a testbed with simple rule-based controllers. Its purpose is to find which levers matter
+before committing to a method.
+
+**There is no optimisation-based controller yet**, whether MPC, stochastic programming or
+reinforcement learning. Those are the obvious next step, and the rule-based policies here are the
+baselines they should beat.
+
+**Known simplifications:**
+
+- **Power system:**
+  - The model is an hourly energy balance only.
+  - It has no battery or inverter power limits, and no voltage or frequency.
+- **Battery:**
+  - The battery is a single energy store with a constant round-trip efficiency.
+  - Calendar fade is linear in time, doubles every 10 °C, and does not depend on state of charge.
+  - Cycle wear is weighted by depth of discharge, without rainflow counting.
+- **Forecasts are synthetic.** Each is the true hourly PV scaled by one lognormal error per lead
+  day, so the hourly shape is always right.
+- **The site is off-grid.** There is no grid connection and no model of outages; uncertainty comes
+  from the weather alone.
+- **Loads are placeholders.** Irrigation that isn't served is lost rather than deferred, and it
+  carries no crop cost.
+- **Cold room:** modelled as a single thermal node with a constant COP.
+- **Calendar:** months use a 365-day year, so leap days shift month boundaries by a few days.
+
 ## Field capacity
 
 The data are from Figgener et al., *Nature Energy* (2024), home storage systems in Germany:
