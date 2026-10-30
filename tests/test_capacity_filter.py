@@ -142,3 +142,27 @@ def test_weak_sample_inconsistent_with_the_candidate_still_discards_it():
     f, event, _ = filter_update(f, z=0.92, r=PARTIAL_R, day=11)  # 17 pp from the candidate
     assert event == "update"
     assert f.candidate is None
+
+
+NOISY_R = 0.08**2  # the noisiest partial-charge estimator in experiment 1
+
+
+def test_noisy_reading_pointing_the_other_way_discards_the_candidate_even_if_close_enough():
+    f, _, _ = filter_update(CONVERGED, z=0.75, r=R, day=10)  # suspected drop
+    f, event, _ = filter_update(f, z=0.92, r=NOISY_R, day=11)  # within 3 sigma of 0.75, but points up
+    assert event == "update"
+    assert f.candidate is None
+
+
+def test_noisy_reading_pointing_the_same_way_keeps_the_candidate():
+    f, _, _ = filter_update(CONVERGED, z=0.75, r=R, day=10)
+    f, event, _ = filter_update(f, z=0.86, r=NOISY_R, day=11)
+    assert event == "update"
+    assert f.candidate is not None and f.candidate.sign == -1
+
+
+def test_reading_exactly_at_the_estimate_does_not_count_as_agreeing():
+    f, _, _ = filter_update(CONVERGED, z=0.75, r=R, day=10)
+    f, event, _ = filter_update(f, z=CONVERGED.est, r=NOISY_R, day=11)
+    assert event == "update"
+    assert f.candidate is None

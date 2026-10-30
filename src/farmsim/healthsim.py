@@ -235,16 +235,18 @@ def _consistent(cand: Candidate, z: float, r: float) -> bool:
 def filter_update(f: CapacityFilter, z: float, r: float, day: int) -> tuple[CapacityFilter, str, bool]:
     """Measurement update with two-sample step confirmation.
 
-    A sample within 4 sigma is a standard update. It keeps a pending candidate when it is consistent with
-    it (amendment A3.1, adopted after the pre-registered rule, which discarded the candidate, delayed step
-    detection with noisy partial-charge samples), but it never confirms a step by itself: only a second
-    outlier does. Returns the filter, the event ("update", "held" or "jump") and whether it was clipped.
+    A sample within 4 sigma is a standard update. It keeps a pending candidate when it points the same way
+    from the estimate and lies within 3 sigma of it (amendment A3.1, adopted after the pre-registered rule,
+    which discarded the candidate, delayed step detection with noisy partial-charge samples). It never
+    confirms a step by itself: only a second outlier does. Returns the filter, the event ("update", "held"
+    or "jump") and whether the estimate was clipped.
     """
     nu = (z - f.est) / math.sqrt(f.var + r)
     cand = f.candidate if f.candidate and day - f.candidate.day <= CANDIDATE_LIFETIME_DAYS else None
     if abs(nu) <= JUMP_SIGMAS:
         est, var = kalman_update(f.est, f.var, z, r)
-        keep = cand if cand and _consistent(cand, z, r) else None  # amendment A3.1
+        agrees = cand is not None and (z - f.est) * cand.sign > 0 and _consistent(cand, z, r)
+        keep = cand if agrees else None  # amendment A3.1: same direction and close to the candidate
         new, clipped = _clipped(CapacityFilter(est, var, keep))
         return new, "update", clipped
     sign = 1 if nu > 0 else -1
