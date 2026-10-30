@@ -13,6 +13,7 @@ from farmsim.healthsim import (
     Site,
     cycle_wear,
     kalman_update,
+    probe_pump_kwh,
     required_energy,
     simulate,
 )
@@ -220,3 +221,20 @@ def test_precooling_and_cold_credit_reduce_hot_hours_through_a_cloudy_spell():
     multi = simulate(cloudy_spell_site(), farm, pack, Sensing(), Policy(**need, precool_surplus=True, cold_credit=True))
     assert multi.hours_above_max <= base.hours_above_max
     assert multi.unmet_critical_kwh < base.unmet_critical_kwh
+
+
+def test_probe_pumping_counts_loads_once_when_pv_exceeds_them():
+    pump = probe_pump_kwh(headroom_kwh=0.0, eta=1.0, pv=3.0, critical=0.5, nc_served=0.5, pump_kw=5.0, tank_room=10.0)
+    assert pump == pytest.approx(2.0)
+
+
+def test_probe_pumping_at_night_spends_battery_headroom_net_of_loads():
+    pump = probe_pump_kwh(headroom_kwh=5.0, eta=0.9, pv=0.0, critical=0.5, nc_served=0.5, pump_kw=9.0, tank_room=10.0)
+    assert pump == pytest.approx(5.0 * 0.9 - 1.0)
+
+
+def test_probe_pumping_is_bounded_by_pump_power_and_tank_room():
+    args = dict(headroom_kwh=50.0, eta=1.0, pv=0.0, critical=0.0, nc_served=0.0)
+    assert probe_pump_kwh(**args, pump_kw=2.0, tank_room=10.0) == pytest.approx(2.0)
+    assert probe_pump_kwh(**args, pump_kw=2.0, tank_room=0.5) == pytest.approx(0.5)
+    assert probe_pump_kwh(headroom_kwh=0.0, eta=1.0, pv=0.0, critical=1.0, nc_served=0.0, pump_kw=2.0, tank_room=5) == 0

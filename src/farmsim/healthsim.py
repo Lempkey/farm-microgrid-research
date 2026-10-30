@@ -167,6 +167,14 @@ def required_energy(pv_kw: list[float], load_kw: list[float], capacity_kwh: floa
     return RequiredEnergy(initial_kwh=need, feasible=peak <= capacity_kwh + 1e-9, max_required_kwh=peak)
 
 
+def probe_pump_kwh(
+    headroom_kwh: float, eta: float, pv: float, critical: float, nc_served: float, pump_kw: float, tank_room: float
+) -> float:
+    """Pumping on a probe night: one AC balance, so PV and battery headroom net of the hour's loads."""
+    available = headroom_kwh * eta + pv - critical - nc_served
+    return max(0.0, min(pump_kw, tank_room, available))
+
+
 def kalman_update(est: float, var: float, z: float, r: float) -> tuple[float, float]:
     """Scalar update; an implausible jump re-opens the filter so step losses are absorbed fast."""
     innov = z - est
@@ -357,8 +365,8 @@ def _dispatch(
     pump = 0.0
     if s.probe_night and s.soc_est > threshold and s.tank < farm.tank_kwh:
         headroom = (s.soc_est - threshold) * _controller_capacity(s, policy) * pack.nominal_kwh
-        spare = headroom * math.sqrt(pack.round_trip_efficiency) + max(0.0, pv - critical - nc_served)
-        pump = max(0.0, min(farm.pump_kw, farm.tank_kwh - s.tank, spare - critical - nc_served))
+        eta = math.sqrt(pack.round_trip_efficiency)
+        pump = probe_pump_kwh(headroom, eta, pv, critical, nc_served, farm.pump_kw, farm.tank_kwh - s.tank)
 
     eta = math.sqrt(pack.round_trip_efficiency)
     surplus = pv - critical - nc_served - pump
