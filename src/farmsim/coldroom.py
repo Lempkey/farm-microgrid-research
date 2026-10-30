@@ -2,8 +2,10 @@
 
 State `q` is the cold stored below the spoilage limit `t_max`, in kWh of heat: q = 0 at `t_max`,
 negative when the room is warmer. Depletion order: pre-cooling below the setpoint first, then the
-bank (ice or PCM, which holds the setpoint while it melts), then the room warms towards and past
-`t_max`.
+bank, then the room warms towards and past `t_max`.
+
+The bank is an idealised phase-change material that melts at exactly the 4 C setpoint and holds it
+until spent. Ice is not modelled: it melts at 0 C, outside the 1-8 C band.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ class ColdRoom:
     t_set: float = 4.0
     t_min: float = 1.0
     t_max: float = 8.0
-    bank_kwh: float = 0.0  # thermal
+    bank_kwh: float = 0.0  # thermal; an idealised PCM melting at t_set
 
     @property
     def q_set(self) -> float:

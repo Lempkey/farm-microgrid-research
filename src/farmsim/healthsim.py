@@ -1,7 +1,8 @@
 """Hourly off-grid farm microgrid with a battery whose capacity must be learned (experiment 1).
 
-Truth: an LFP pack fades with temperature-scaled calendar ageing and depth-weighted cycling, and may
-lose a module abruptly (`step_hour`). The BMS cuts off at `floor_soc` of the *true* capacity.
+Truth: an LFP pack fades with temperature-scaled calendar ageing and a cycle-wear proxy weighted by
+depth below full (not rainflow counting), and may lose a module abruptly (`step_hour`). The BMS cuts
+off at `floor_soc` of the *true* capacity.
 
 Controller: counts state of charge against its own capacity estimate, sheds non-critical load below
 `reserve_soc`, and (if `probe`) runs a probe night: pumps water into the irrigation tank until the
@@ -154,7 +155,9 @@ def rng_stream(seed: int, stream: int) -> random.Random:
 
 
 def cycle_wear(soc_before: float, soc_after: float, fade_per_full_cycle: float, exponent: float) -> float:
-    """Depth-weighted wear of a discharge step: a full 1 -> 0 discharge costs one full cycle."""
+    """Cycle-wear proxy for a discharge step, weighted by depth below full: a full 1 -> 0 discharge costs one
+    full cycle. Not rainflow counting: wear depends on how far below full the pack goes, not on cycle amplitude.
+    """
     depth_before, depth_after = 1.0 - soc_before, 1.0 - soc_after
     return fade_per_full_cycle * (max(depth_after, 0.0) ** exponent - max(depth_before, 0.0) ** exponent)
 
