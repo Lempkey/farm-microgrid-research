@@ -121,18 +121,37 @@ def test_dawn_timed_probe_keeps_cold_room_served_while_still_reaching_empty():
 
 
 def test_required_energy_covers_a_dark_horizon_including_discharge_losses():
-    need = required_energy(pv_kw=[0.0] * 10, load_kw=[1.0] * 10, capacity_kwh=50, efficiency=0.95)
-    assert need == pytest.approx(10 / math.sqrt(0.95))
+    req = required_energy(pv_kw=[0.0] * 10, load_kw=[1.0] * 10, capacity_kwh=50, efficiency=0.95)
+    assert req.initial_kwh == pytest.approx(10 / math.sqrt(0.95))
+    assert req.feasible
 
 
 def test_required_energy_only_counts_load_until_the_pack_can_refill():
     pv = [0.0] * 5 + [10.0] * 5 + [0.0] * 5
-    need = required_energy(pv_kw=pv, load_kw=[1.0] * 15, capacity_kwh=50, efficiency=1.0)
-    assert need == pytest.approx(5.0)
+    req = required_energy(pv_kw=pv, load_kw=[1.0] * 15, capacity_kwh=50, efficiency=1.0)
+    assert req.initial_kwh == pytest.approx(5.0)
+    assert req.max_required_kwh == pytest.approx(5.0)
 
 
-def test_required_energy_never_exceeds_capacity():
-    assert required_energy([0.0] * 100, [1.0] * 100, capacity_kwh=20, efficiency=1.0) == pytest.approx(20)
+def test_required_energy_request_never_exceeds_capacity_but_flags_the_impossible_horizon():
+    req = required_energy([0.0] * 100, [1.0] * 100, capacity_kwh=20, efficiency=1.0)
+    assert req.initial_kwh == pytest.approx(20)
+    assert not req.feasible
+    assert req.max_required_kwh == pytest.approx(100)
+
+
+def test_required_energy_flags_a_later_dark_spell_the_pack_cannot_hold_even_after_refilling():
+    pv = [0.0] * 2 + [50.0] * 2 + [0.0] * 30  # refill, then 30 h at 1 kW against a 20 kWh pack
+    req = required_energy(pv, [1.0] * 34, capacity_kwh=20, efficiency=1.0)
+    assert req.initial_kwh == pytest.approx(2.0)  # only the first two hours need stored energy now
+    assert not req.feasible
+    assert req.max_required_kwh == pytest.approx(30)
+
+
+def test_required_energy_is_feasible_when_need_exactly_fills_the_pack():
+    req = required_energy([0.0] * 20, [1.0] * 20, capacity_kwh=20, efficiency=1.0)
+    assert req.feasible
+    assert req.initial_kwh == pytest.approx(20)
 
 
 def cloudy_spell_site() -> Site:

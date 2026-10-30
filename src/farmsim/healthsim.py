@@ -133,6 +133,7 @@ class Result:
     final_cold_kwh_th: float = 0.0
     tank_drawn_kwh: float = 0.0
     final_tank_kwh: float = 0.0
+    infeasible_horizons: int = 0  # hours whose need-sized reserve came from an impossible horizon
 
 
 def cycle_wear(soc_before: float, soc_after: float, fade_per_full_cycle: float, exponent: float) -> float:
@@ -141,15 +142,29 @@ def cycle_wear(soc_before: float, soc_after: float, fade_per_full_cycle: float, 
     return fade_per_full_cycle * (max(depth_after, 0.0) ** exponent - max(depth_before, 0.0) ** exponent)
 
 
-def required_energy(pv_kw: list[float], load_kw: list[float], capacity_kwh: float, efficiency: float) -> float:
-    """Stored energy needed now so `load_kw` is met every hour of the horizon (backward recursion)."""
+@dataclass(frozen=True)
+class RequiredEnergy:
+    initial_kwh: float  # implementable reserve request now, never above capacity
+    feasible: bool  # False: the horizon's load cannot be met even from a suitably charged pack
+    max_required_kwh: float  # largest stored energy the horizon needs at any hour, if capacity were unlimited
+
+
+def required_energy(pv_kw: list[float], load_kw: list[float], capacity_kwh: float, efficiency: float) -> RequiredEnergy:
+    """Backward recursion over the horizon for the stored energy `load_kw` needs.
+
+    Returns an implementable reserve request and a separate feasibility diagnostic; initial_kwh does
+    not imply that all forecast load can be served. The request saturates at capacity every hour (a
+    pack cannot hold more), while an unsaturated twin recursion records the largest need anywhere.
+    """
     eta = math.sqrt(efficiency)
-    need = 0.0
+    need = unlimited = peak = 0.0
     for pv, load in zip(reversed(pv_kw), reversed(load_kw), strict=True):
         net = pv - load
         need = max(0.0, need - net * eta) if net >= 0 else need - net / eta
+        unlimited = max(0.0, unlimited - net * eta) if net >= 0 else unlimited - net / eta
         need = min(need, capacity_kwh)
-    return need
+        peak = max(peak, unlimited)
+    return RequiredEnergy(initial_kwh=need, feasible=peak <= capacity_kwh + 1e-9, max_required_kwh=peak)
 
 
 def kalman_update(est: float, var: float, z: float, r: float) -> tuple[float, float]:
@@ -192,7 +207,7 @@ class _State:
         self.initial_energy = self.energy
         self.initial_cold = 0.0
         self.totals = dict.fromkeys(_TOTALS, 0.0)
-        self.counts = dict.fromkeys(("pairs", "partials", "empties", "probes", "hot_hours"), 0)
+        self.counts = dict.fromkeys(("pairs", "partials", "empties", "probes", "hot_hours", "infeasible"), 0)
 
 
 def simulate(
@@ -442,8 +457,10 @@ def _forecast_reserve(s: _State, site: Site, farm: Farm, pack: Pack, policy: Pol
         loads = planned_loads(room, ambient, credit)
     else:
         loads = [farm.critical_kw] * len(pv)
-    need = required_energy(pv, loads, capacity, pack.round_trip_efficiency)
-    return min(MAX_RESERVE_SOC, pack.floor_soc + need / capacity + policy.reserve_margin)
+    req = required_energy(pv, loads, capacity, pack.round_trip_efficiency)
+    if not req.feasible:
+        s.counts["infeasible"] += 1
+    return min(MAX_RESERVE_SOC, pack.floor_soc + req.initial_kwh / capacity + policy.reserve_margin)
 
 
 def _observe(s: _State, pack: Pack, sensing: Sensing, rng: random.Random) -> None:
@@ -513,4 +530,5 @@ def _result(s: _State) -> Result:
         final_cold_kwh_th=s.cold,
         tank_drawn_kwh=s.totals["from_tank"],
         final_tank_kwh=s.tank,
+        infeasible_horizons=s.counts["infeasible"],
     )
