@@ -32,6 +32,10 @@ uv run python experiments/fetch_weather.py data/power
 # Experiments use 4 worker processes by default; set MAX_WORKERS to change that
 uv run python experiments/exp2_need_sized_reserve.py data/power 20 data/exp2_rows.json
 uv run python experiments/summarise_exp2.py data/exp2_rows.json
+
+# Experiments 2, 2b and 3 per weather year, 2001-2024 (about 30 min on 4 workers)
+uv run python experiments/per_year.py data/power data/per_year_rows.json
+uv run python experiments/summarise_per_year.py data/per_year_rows.json results/per_year_2001_2024.md
 ```
 
 One 5-year run takes about 0.05 s with a fixed reserve, 0.4 s with the need-sized reserve and 0.7 s
@@ -48,16 +52,20 @@ Each experiment's decision rule was written down before its results were seen.
 | Experiment | Question | Result so far (placeholder loads, one site) |
 |---|---|---|
 | 1. `exp1_capacity_knowledge.py` | Does knowing the battery's true capacity improve dispatch? Does deliberately probing it pay? | Barely: ≤ 2% change in unmet critical load (1.9% at most, re-run after the October 2026 audit fixes; `gate_c100.py`). Probing costs more than it gains. |
-| 2. `exp2_need_sized_reserve.py`, `exp2b_forecast_value.py` | Does a reserve sized to the coming days' need beat a fixed reserve? How much of that comes from the forecast? | A need-sized reserve beats the fixed-reserve frontier by 27–67%. Forecasts add 5–15% over climatology. |
-| 3. `exp3_multi_store.py` | Does planning across battery, cold room and water tank beat battery-only protection? | Yes, mostly by pumping water with surplus PV, which is good practice already. Pre-cooling alone gives 14–31%. An idealised 4 °C PCM bank beats an equivalent battery by 51–78%. Absolute effects are small at this sizing. |
+| 2. `exp2_need_sized_reserve.py`, `exp2b_forecast_value.py` | Does a reserve sized to the coming days' need beat a fixed reserve? How much of that comes from the forecast? | Yes. With a realistic forecast it cuts unmet critical load by 37% (new pack; 95% interval 32–46%) and 41% (aged pack; 35–51%) against the fixed-reserve frontier at equal unmet other load: 3–5 kWh/yr. Climatology alone gives 20–26%. Perfect weather beats climatology by only 12–13%. |
+| 3. `exp3_multi_store.py` | Does planning across battery, cold room and water tank beat battery-only protection? | Yes, mostly by pumping water with surplus PV, which is good practice already: it dominates the battery-only frontier in 19 (new pack) and 22 (aged pack) of 24 years. Pre-cooling alone gives 17–19% fewer hours above 8 °C. An idealised 4 °C PCM bank gives 62–70% fewer hours than a battery 3 kWh larger in the 15 years where they overlap; in the other 9 both keep the room cold and the bigger battery sheds 2–7 kWh/yr less other load. Absolute effects are small at this sizing. |
 
 **Read the results with care:**
 
 - **Comparisons are frontier against frontier.** Each policy is swept over safety margins and
   compared at equal unmet non-critical load.
-- **Seeds are not independent.** Simulations start on 1 January of year `seed % 10` of 2015–2024
-  and run 5 calendar years, so 20 seeds cover only **10 overlapping weather windows**. Experiments 2
-  and 3 are due a re-run with per-year statistics over 2001–2024.
+- **Experiments 2 and 3 are per weather year.** Each year of 2001–2024 is a separate 1-year run
+  (10 seeds averaged within the year), compared on the common support of Pareto envelopes; intervals
+  come from a circular block bootstrap over years (`results/per_year_2001_2024.md`). In a 1-year run the
+  aged pack never loses its module (that happens in years 2–4), so wear and the module loss come from
+  four 5-year windows instead.
+- **Experiment 1's seeds are not independent.** Its runs start on 1 January of year `seed % 10` of
+  2015–2024 and run 5 calendar years, so 20 seeds cover only **10 overlapping weather windows**.
 - **Weather is regional.** NASA POWER solar data sit on a 1° grid, so they are not a site
   measurement.
 

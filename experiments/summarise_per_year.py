@@ -21,6 +21,7 @@ from farmsim.frontier import Comparison, compare_frontiers, compare_point, paret
 from farmsim.stats import block_bootstrap, percentile_interval
 
 RESAMPLES, BOOT_SEED = 5000, 2026
+MIN_YEARS_FOR_INTERVAL = 3  # the longest block; fewer years with common support get no interval
 BLOCKS = {"block 2": 2, "block 3": 3, "iid": 1}
 SMALL_REFERENCE = 1.0  # kWh/yr or h/yr: below this a percentage is n/a
 CONFIRM, WEAK = 0.25, 0.10  # the R-44/R-45 rule thresholds
@@ -55,6 +56,9 @@ def summarise(comparisons: list[tuple[int, Comparison]]) -> Summary:
     if not gaps:
         return Summary(comparisons, None, None, None, {}, kinds)
     mean_gap = st.mean(g for g, _ in gaps)
+    if len(gaps) < MIN_YEARS_FOR_INTERVAL:
+        ratio = sum(g for g, _ in gaps) / sum(r for _, r in gaps) if sum(r for _, r in gaps) > 0 else None
+        return Summary(comparisons, mean_gap, None, ratio, {}, kinds)
     gap_ci = percentile_interval(block_bootstrap(gaps, lambda xs: st.mean(g for g, _ in xs), 2, RESAMPLES, BOOT_SEED))
     ratio, ratio_ci = None, {}
     if st.mean(r for _, r in gaps) >= SMALL_REFERENCE:
@@ -99,8 +103,11 @@ def report_block(title: str, unit: str, s: Summary, original: str) -> list[str]:
     if s.mean_gap is None:
         lines.append("- No year with common support.")
         return lines
-    lo, hi = s.gap_ci
-    lines.append(f"- **Mean gap: {s.mean_gap:+.2f} {unit}** (block-2 95% interval {lo:+.2f} to {hi:+.2f})")
+    if s.gap_ci is None:
+        interval = f"no interval: fewer than {MIN_YEARS_FOR_INTERVAL} years with common support"
+    else:
+        interval = f"block-2 95% interval {s.gap_ci[0]:+.2f} to {s.gap_ci[1]:+.2f}"
+    lines.append(f"- **Mean gap: {s.mean_gap:+.2f} {unit}** ({interval})")
     if s.ratio is None:
         lines.append(f"- Ratio: n/a (mean reference below {SMALL_REFERENCE} {unit})")
     else:
