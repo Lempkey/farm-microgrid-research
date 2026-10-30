@@ -143,7 +143,7 @@ class Result:
     final_cold_kwh_th: float = 0.0
     tank_drawn_kwh: float = 0.0
     final_tank_kwh: float = 0.0
-    infeasible_horizons: int = 0  # hours whose need-sized reserve came from an impossible horizon
+    infeasible_reserve_hours: int = 0  # controller-hours whose need-sized reserve came from an infeasible horizon
     held_outliers: int = 0  # capacity samples held as step candidates
     confirmed_jumps: int = 0
     estimate_clips: int = 0  # times the capacity estimate hit CAPACITY_BOUNDS
@@ -625,7 +625,7 @@ def _result(s: _State) -> Result:
         final_cold_kwh_th=s.cold,
         tank_drawn_kwh=s.totals["from_tank"],
         final_tank_kwh=s.tank,
-        infeasible_horizons=s.counts["infeasible"],
+        infeasible_reserve_hours=s.counts["infeasible"],
         held_outliers=s.counts["held"],
         confirmed_jumps=s.counts["jumps"],
         estimate_clips=s.counts["clips"],
