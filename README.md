@@ -6,8 +6,10 @@ a rural farm's essential loads running through blackouts, for years?**
 Two parts:
 
 - **`src/farmsim/` + `experiments/`:** an hourly simulation of an off-grid farm microgrid.
-  - The battery ages: calendar fade that doubles every 10 °C, plus depth-weighted cycle wear.
-  - The controller learns the battery's capacity as it runs.
+  - The battery ages: calendar fade that doubles every 10 °C, plus a cycle-wear proxy weighted by
+    depth below full.
+  - The controller learns the battery's capacity as it runs. Its filter holds a lone outlier and
+    needs two consistent samples to accept a sudden capacity step.
   - The cold room is modelled as a thermal store.
   - Experiments compare reserve policies under real tropical weather.
 - **`field_capacity/`:** estimating battery capacity from ordinary operation, with no dedicated tests.
@@ -22,9 +24,9 @@ requests are welcome.
 
 ```bash
 uv sync --all-extras          # Python 3.12+
-uv run pytest -q              # the model's behaviour, checkable by hand
+uv run pytest -q              # behaviour checkable by hand, energy conservation, regression snapshots
 
-# Weather: NASA POWER hourly, 2015-2024 (Valencia area, Venezuela, by default)
+# Weather: NASA POWER hourly, 2001-2024 (Valencia area, Venezuela, by default)
 uv run python experiments/fetch_weather.py data/power
 
 # Experiments use 4 worker processes by default; set MAX_WORKERS to change that
@@ -32,7 +34,12 @@ uv run python experiments/exp2_need_sized_reserve.py data/power 20 data/exp2_row
 uv run python experiments/summarise_exp2.py data/exp2_rows.json
 ```
 
-A full sweep takes from minutes to about an hour, depending on the experiment and the core count.
+One 5-year run takes about 0.05 s with a fixed reserve, 0.4 s with the need-sized reserve and 0.7 s
+with the cold room (`experiments/benchmark.py`), so a full sweep takes seconds to minutes.
+
+**Changing the model.** `tests/snapshots.json` pins six configurations at a tolerance. An intended
+change regenerates it (`UPDATE_SNAPSHOTS=1 uv run pytest tests/test_snapshots.py`) and comes with a
+delta table (`experiments/snapshot_delta.py <old> <new>`).
 
 ## Experiments
 
@@ -40,16 +47,17 @@ Each experiment's decision rule was written down before its results were seen.
 
 | Experiment | Question | Result so far (placeholder loads, one site) |
 |---|---|---|
-| 1. `exp1_capacity_knowledge.py` | Does knowing the battery's true capacity improve dispatch? Does deliberately probing it pay? | Barely: ≤ 2% change in unmet critical load. Probing costs more than it gains. |
+| 1. `exp1_capacity_knowledge.py` | Does knowing the battery's true capacity improve dispatch? Does deliberately probing it pay? | Barely: ≤ 2% change in unmet critical load (1.9% at most, re-run after the October 2026 audit fixes; `gate_c100.py`). Probing costs more than it gains. |
 | 2. `exp2_need_sized_reserve.py`, `exp2b_forecast_value.py` | Does a reserve sized to the coming days' need beat a fixed reserve? How much of that comes from the forecast? | A need-sized reserve beats the fixed-reserve frontier by 27–67%. Forecasts add 5–15% over climatology. |
-| 3. `exp3_multi_store.py` | Does planning across battery, cold room and water tank beat battery-only protection? | Yes, mostly by pumping water with surplus PV, which is good practice already. Pre-cooling alone gives 14–31%. A thermal bank beats an equivalent battery by 51–78%. Absolute effects are small at this sizing. |
+| 3. `exp3_multi_store.py` | Does planning across battery, cold room and water tank beat battery-only protection? | Yes, mostly by pumping water with surplus PV, which is good practice already. Pre-cooling alone gives 14–31%. An idealised 4 °C PCM bank beats an equivalent battery by 51–78%. Absolute effects are small at this sizing. |
 
 **Read the results with care:**
 
 - **Comparisons are frontier against frontier.** Each policy is swept over safety margins and
   compared at equal unmet non-critical load.
-- **Seeds are not independent.** Simulations start at `seed % 10` years into 10 years of weather and
-  run 5 years, so 20 seeds cover only **10 overlapping weather windows**.
+- **Seeds are not independent.** Simulations start on 1 January of year `seed % 10` of 2015–2024
+  and run 5 calendar years, so 20 seeds cover only **10 overlapping weather windows**. Experiments 2
+  and 3 are due a re-run with per-year statistics over 2001–2024.
 - **Weather is regional.** NASA POWER solar data sit on a 1° grid, so they are not a site
   measurement.
 
@@ -70,15 +78,17 @@ baselines they should beat.
 - **Battery:**
   - The battery is a single energy store with a constant round-trip efficiency.
   - Calendar fade is linear in time, doubles every 10 °C, and does not depend on state of charge.
-  - Cycle wear is weighted by depth of discharge, without rainflow counting.
+  - Cycle wear is a proxy, weighted by depth below full. There is no rainflow counting, so it
+    tracks how deep the pack goes rather than each cycle's amplitude.
 - **Forecasts are synthetic.** Each is the true hourly PV scaled by one lognormal error per lead
   day, so the hourly shape is always right.
 - **The site is off-grid.** There is no grid connection and no model of outages; uncertainty comes
   from the weather alone.
 - **Loads are placeholders.** Irrigation that isn't served is lost rather than deferred, and it
   carries no crop cost.
-- **Cold room:** modelled as a single thermal node with a constant COP.
-- **Calendar:** months use a 365-day year, so leap days shift month boundaries by a few days.
+- **Cold room:** modelled as a single thermal node with a constant COP. The optional bank is an
+  idealised phase-change material that holds exactly the 4 °C setpoint while it melts; ice is not
+  modelled.
 
 ## Field capacity
 

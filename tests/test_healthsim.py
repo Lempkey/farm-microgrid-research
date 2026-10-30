@@ -13,8 +13,12 @@ from farmsim.healthsim import (
     Site,
     cycle_wear,
     kalman_update,
+    months_from_timestamps,
+    probe_pump_kwh,
     required_energy,
+    rng_stream,
     simulate,
+    site_month,
 )
 
 DAYS = 24
@@ -52,11 +56,6 @@ def test_kalman_update_moves_estimate_towards_measurement_and_shrinks_variance()
     est, var = kalman_update(est=1.0, var=0.03**2, z=0.9, r=0.01**2)
     assert 0.9 < est < 0.92
     assert var < 0.01**2
-
-
-def test_kalman_update_reopens_filter_on_implausible_jump():
-    est, _ = kalman_update(est=1.0, var=0.005**2, z=0.8, r=0.01**2)
-    assert est < 0.85
 
 
 def test_energy_balance_closes_for_every_load_class():
@@ -121,18 +120,37 @@ def test_dawn_timed_probe_keeps_cold_room_served_while_still_reaching_empty():
 
 
 def test_required_energy_covers_a_dark_horizon_including_discharge_losses():
-    need = required_energy(pv_kw=[0.0] * 10, load_kw=[1.0] * 10, capacity_kwh=50, efficiency=0.95)
-    assert need == pytest.approx(10 / math.sqrt(0.95))
+    req = required_energy(pv_kw=[0.0] * 10, load_kw=[1.0] * 10, capacity_kwh=50, efficiency=0.95)
+    assert req.initial_kwh == pytest.approx(10 / math.sqrt(0.95))
+    assert req.feasible
 
 
 def test_required_energy_only_counts_load_until_the_pack_can_refill():
     pv = [0.0] * 5 + [10.0] * 5 + [0.0] * 5
-    need = required_energy(pv_kw=pv, load_kw=[1.0] * 15, capacity_kwh=50, efficiency=1.0)
-    assert need == pytest.approx(5.0)
+    req = required_energy(pv_kw=pv, load_kw=[1.0] * 15, capacity_kwh=50, efficiency=1.0)
+    assert req.initial_kwh == pytest.approx(5.0)
+    assert req.max_required_kwh == pytest.approx(5.0)
 
 
-def test_required_energy_never_exceeds_capacity():
-    assert required_energy([0.0] * 100, [1.0] * 100, capacity_kwh=20, efficiency=1.0) == pytest.approx(20)
+def test_required_energy_request_never_exceeds_capacity_but_flags_the_impossible_horizon():
+    req = required_energy([0.0] * 100, [1.0] * 100, capacity_kwh=20, efficiency=1.0)
+    assert req.initial_kwh == pytest.approx(20)
+    assert not req.feasible
+    assert req.max_required_kwh == pytest.approx(100)
+
+
+def test_required_energy_flags_a_later_dark_spell_the_pack_cannot_hold_even_after_refilling():
+    pv = [0.0] * 2 + [50.0] * 2 + [0.0] * 30  # refill, then 30 h at 1 kW against a 20 kWh pack
+    req = required_energy(pv, [1.0] * 34, capacity_kwh=20, efficiency=1.0)
+    assert req.initial_kwh == pytest.approx(2.0)  # only the first two hours need stored energy now
+    assert not req.feasible
+    assert req.max_required_kwh == pytest.approx(30)
+
+
+def test_required_energy_is_feasible_when_need_exactly_fills_the_pack():
+    req = required_energy([0.0] * 20, [1.0] * 20, capacity_kwh=20, efficiency=1.0)
+    assert req.feasible
+    assert req.initial_kwh == pytest.approx(20)
 
 
 def cloudy_spell_site() -> Site:
@@ -201,3 +219,60 @@ def test_precooling_and_cold_credit_reduce_hot_hours_through_a_cloudy_spell():
     multi = simulate(cloudy_spell_site(), farm, pack, Sensing(), Policy(**need, precool_surplus=True, cold_credit=True))
     assert multi.hours_above_max <= base.hours_above_max
     assert multi.unmet_critical_kwh < base.unmet_critical_kwh
+
+
+def test_probe_pumping_counts_loads_once_when_pv_exceeds_them():
+    pump = probe_pump_kwh(headroom_kwh=0.0, eta=1.0, pv=3.0, critical=0.5, nc_served=0.5, pump_kw=5.0, tank_room=10.0)
+    assert pump == pytest.approx(2.0)
+
+
+def test_probe_pumping_at_night_spends_battery_headroom_net_of_loads():
+    pump = probe_pump_kwh(headroom_kwh=5.0, eta=0.9, pv=0.0, critical=0.5, nc_served=0.5, pump_kw=9.0, tank_room=10.0)
+    assert pump == pytest.approx(5.0 * 0.9 - 1.0)
+
+
+def test_probe_pumping_is_bounded_by_pump_power_and_tank_room():
+    args = dict(headroom_kwh=50.0, eta=1.0, pv=0.0, critical=0.0, nc_served=0.0)
+    assert probe_pump_kwh(**args, pump_kw=2.0, tank_room=10.0) == pytest.approx(2.0)
+    assert probe_pump_kwh(**args, pump_kw=2.0, tank_room=0.5) == pytest.approx(0.5)
+    assert probe_pump_kwh(headroom_kwh=0.0, eta=1.0, pv=0.0, critical=1.0, nc_served=0.0, pump_kw=2.0, tank_room=5) == 0
+
+
+def test_random_streams_are_stable_and_distinct_per_purpose():
+    assert rng_stream(3, 1).random() == rng_stream(3, 1).random()
+    draws = {rng_stream(seed, k).random() for seed in range(5) for k in range(4)}
+    assert len(draws) == 20
+
+
+def test_probe_forecast_draws_do_not_change_measurement_noise():
+    pack, sensing = Pack(nominal_kwh=8, initial_capacity=0.9), Sensing(prior_capacity=1.0, prior_sigma=0.1)
+    site, farm = sunny_site(days=120), small_farm(pv_kwp=6)
+    plain = simulate(site, farm, pack, sensing, Policy(reserve_soc=0.05), seed=3)
+    never_probes = Policy(reserve_soc=0.05, probe=True, probe_trigger_sigma=0.0, probe_forecast_margin=1e9)
+    drawing = simulate(site, farm, pack, sensing, never_probes, seed=3)  # draws a forecast every night
+    assert drawing.probes == 0
+    assert drawing.pair_samples == plain.pair_samples > 20
+    assert drawing.final_abs_error == plain.final_abs_error
+
+
+def test_months_come_from_the_timestamps_so_leap_days_do_not_shift_them():
+    month_days = ((2, 29), (12, 31))
+    keys = [f"2024{m:02d}{d:02d}{h:02d}" for m, days in month_days for d in range(1, days + 1) for h in range(24)]
+    months = months_from_timestamps(keys)
+    assert months[0] == 1 and months[29 * 24 - 1] == 1  # 29 February is still February
+    assert months[-1] == 11
+
+
+def test_site_month_uses_the_calendar_when_given_and_a_365_day_year_otherwise():
+    plain = dark_site(days=366)
+    assert site_month(plain, 365 * 24) == 0  # the old approximation: day 365 wraps to January
+    calendar = Site(plain.pv_kw_per_kwp, plain.ambient_c, month_of_hour=tuple([0] * 365 * 24 + [11] * 24))
+    assert site_month(calendar, 365 * 24) == 11
+
+
+def test_daily_irrigation_follows_the_calendar_month():
+    site = dark_site(days=2)
+    farm = Farm(pv_kwp=1, critical_kw=0, household_kw=tuple([0.0] * 24), irrigation_kwh=tuple([1.0] * 11 + [9.0]))
+    december = Site(site.pv_kw_per_kwp, site.ambient_c, month_of_hour=tuple([11] * 48))
+    r = simulate(december, farm, Pack(nominal_kwh=10), Sensing(), Policy())
+    assert r.demand_kwh == pytest.approx(18.0)

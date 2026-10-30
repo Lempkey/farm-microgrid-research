@@ -8,7 +8,7 @@ import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from common import BATTERY_KWH, FARMS, MAX_WORKERS, YEARS, H, load_site, pack_and_sensing
+from common import BATTERY_KWH, FARMS, MAX_WORKERS, YEARS, load_site, pack_and_sensing, run_window
 
 from farmsim.healthsim import Policy, Site, simulate
 
@@ -38,7 +38,8 @@ def _init(site: Site) -> None:
 def _worker(args: tuple) -> dict:
     pack_kind, policy_key, seed = args
     pack, sensing = pack_and_sensing(pack_kind, BATTERY_KWH["base"], seed, 0.04)
-    res = simulate(_SITE, FARMS["base"], pack, sensing, POLICIES[policy_key], YEARS * H, (seed % 10) * H, seed)
+    start, hours = run_window(_SITE, seed)
+    res = simulate(_SITE, FARMS["base"], pack, sensing, POLICIES[policy_key], hours, start, seed)
     return dict(farm="base", pack=pack_kind, policy=policy_key, seed=seed, **res.__dict__)
 
 
