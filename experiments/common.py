@@ -5,10 +5,9 @@ All farm, pack and sensing numbers are placeholders, not measurements of a real 
 
 import json
 import os
-import random
 from pathlib import Path
 
-from farmsim.healthsim import Farm, Pack, Sensing, Site
+from farmsim.healthsim import STREAM_SETUP, Farm, Pack, Sensing, Site, rng_stream
 
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "4"))  # keep sweeps from taking every core
 
@@ -37,7 +36,7 @@ def load_site(folder: Path) -> Site:
 
 
 def pack_and_sensing(kind: str, battery_kwh: float, seed: int, partial: float | None) -> tuple[Pack, Sensing]:
-    rng = random.Random(1000 + seed)
+    rng = rng_stream(seed, STREAM_SETUP)
     gain = rng.gauss(0.0, 0.005)
     if kind == "new":
         pack = Pack(nominal_kwh=battery_kwh)

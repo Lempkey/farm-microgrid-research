@@ -38,6 +38,8 @@ PROBE_SOC_MARGIN = 0.02
 DAWN_LANDING_BELOW_EMPTY = 0.02
 FORECAST_HORIZON_H = 72
 MAX_RESERVE_SOC = 0.95
+SEED_STRIDE = 1_000_003  # prime; stream k of run `seed` is seeded seed * SEED_STRIDE + k
+STREAM_SETUP, STREAM_FORECAST, STREAM_PROBE, STREAM_MEASURE = 0, 1, 2, 3
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,11 @@ class Result:
     held_outliers: int = 0  # capacity samples held as step candidates
     confirmed_jumps: int = 0
     estimate_clips: int = 0  # times the capacity estimate hit CAPACITY_BOUNDS
+
+
+def rng_stream(seed: int, stream: int) -> random.Random:
+    """Independent random stream per purpose, so changing one policy feature does not reshuffle the others."""
+    return random.Random(seed * SEED_STRIDE + stream)
 
 
 def cycle_wear(soc_before: float, soc_after: float, fade_per_full_cycle: float, exponent: float) -> float:
@@ -283,7 +290,9 @@ def simulate(
     start_hour: int = 0,
     seed: int = 0,
 ) -> Result:
-    rng = random.Random(seed)
+    forecast_rng, probe_rng, measure_rng = (
+        rng_stream(seed, k) for k in (STREAM_FORECAST, STREAM_PROBE, STREAM_MEASURE)
+    )
     s = _State(pack, sensing)
     s.cold = s.initial_cold = farm.cold_room.q_set if farm.cold_room else 0.0
     n = len(site.pv_kw_per_kwp)
@@ -298,13 +307,13 @@ def simulate(
             _start_day(s, farm, sensing, day, start_hour + step)
         _apply_ageing(s, pack, site.ambient_c[t], step)
         if policy.forecast_reserve and (step == 0 or hour == NIGHT_START):
-            _issue_forecast(s, site, policy, rng, t, climatology)
+            _issue_forecast(s, site, policy, forecast_rng, t, climatology)
         if hour == NIGHT_START:
-            _decide_probe(s, site, farm, pack, sensing, policy, rng, t, day)
+            _decide_probe(s, site, farm, pack, sensing, policy, probe_rng, t, day)
         if hour == NIGHT_END:
             s.probe_night = False
         _dispatch(s, site, farm, pack, sensing, policy, t, hour)
-        _observe(s, pack, sensing, rng)
+        _observe(s, pack, sensing, measure_rng)
     return _result(s)
 
 

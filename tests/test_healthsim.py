@@ -15,6 +15,7 @@ from farmsim.healthsim import (
     kalman_update,
     probe_pump_kwh,
     required_energy,
+    rng_stream,
     simulate,
 )
 
@@ -233,3 +234,20 @@ def test_probe_pumping_is_bounded_by_pump_power_and_tank_room():
     assert probe_pump_kwh(**args, pump_kw=2.0, tank_room=10.0) == pytest.approx(2.0)
     assert probe_pump_kwh(**args, pump_kw=2.0, tank_room=0.5) == pytest.approx(0.5)
     assert probe_pump_kwh(headroom_kwh=0.0, eta=1.0, pv=0.0, critical=1.0, nc_served=0.0, pump_kw=2.0, tank_room=5) == 0
+
+
+def test_random_streams_are_stable_and_distinct_per_purpose():
+    assert rng_stream(3, 1).random() == rng_stream(3, 1).random()
+    draws = {rng_stream(seed, k).random() for seed in range(5) for k in range(4)}
+    assert len(draws) == 20
+
+
+def test_probe_forecast_draws_do_not_change_measurement_noise():
+    pack, sensing = Pack(nominal_kwh=8, initial_capacity=0.9), Sensing(prior_capacity=1.0, prior_sigma=0.1)
+    site, farm = sunny_site(days=120), small_farm(pv_kwp=6)
+    plain = simulate(site, farm, pack, sensing, Policy(reserve_soc=0.05), seed=3)
+    never_probes = Policy(reserve_soc=0.05, probe=True, probe_trigger_sigma=0.0, probe_forecast_margin=1e9)
+    drawing = simulate(site, farm, pack, sensing, never_probes, seed=3)  # draws a forecast every night
+    assert drawing.probes == 0
+    assert drawing.pair_samples == plain.pair_samples > 20
+    assert drawing.final_abs_error == plain.final_abs_error
