@@ -9,6 +9,8 @@ pack reaches the informative low end, so the next full charge yields a capacity 
 
 Learning: a scalar Kalman filter on capacity (fraction of nominal), fed by full-empty pairs (noise
 calibrated to field data; see field_capacity/) and optionally by partial-charge estimates of noise `partial_sigma`.
+A sample more than 4 sigma off is held, not used; a second consistent one within 30 days confirms a step and
+resets the filter (`filter_update`). The estimate stays within physical bounds.
 """
 
 from __future__ import annotations
@@ -25,7 +27,11 @@ FULL_SOC = 0.995
 PARTIAL_START_SOC = 0.40  # a charge from below this crosses the LFP features partial methods need
 REARM_SOC = 0.20  # an empty anchor re-arms once the pack climbs back above this
 DETECT_TOLERANCE = 0.03
-JUMP_SIGMAS = 4.0
+JUMP_SIGMAS = 4.0  # a sample further off than this is held as a step candidate
+CONFIRM_SIGMAS = 3.0  # a second outlier this close to the first confirms the step
+CANDIDATE_LIFETIME_DAYS = 30
+JUMP_RESET_SIGMA = 0.015  # variance floor after a confirmed step: two samples may share a bias
+CAPACITY_BOUNDS = (0.30, 1.05)  # fraction of nominal; above 1 allows for an uncertain nameplate
 NIGHT_START, NIGHT_END = 18, 6
 PV_COVERS_LOAD_HOUR = 7  # dawn-timed probes keep enough for the cold room until PV takes over
 PROBE_SOC_MARGIN = 0.02
@@ -134,6 +140,9 @@ class Result:
     tank_drawn_kwh: float = 0.0
     final_tank_kwh: float = 0.0
     infeasible_horizons: int = 0  # hours whose need-sized reserve came from an impossible horizon
+    held_outliers: int = 0  # capacity samples held as step candidates
+    confirmed_jumps: int = 0
+    estimate_clips: int = 0  # times the capacity estimate hit CAPACITY_BOUNDS
 
 
 def cycle_wear(soc_before: float, soc_after: float, fade_per_full_cycle: float, exponent: float) -> float:
@@ -176,12 +185,55 @@ def probe_pump_kwh(
 
 
 def kalman_update(est: float, var: float, z: float, r: float) -> tuple[float, float]:
-    """Scalar update; an implausible jump re-opens the filter so step losses are absorbed fast."""
-    innov = z - est
-    if innov * innov > JUMP_SIGMAS**2 * (var + r):
-        var += innov * innov
+    """Standard scalar Kalman measurement update."""
     gain = var / (var + r)
-    return est + gain * innov, (1.0 - gain) * var
+    return est + gain * (z - est), (1.0 - gain) * var
+
+
+@dataclass(frozen=True)
+class Candidate:
+    z: float
+    r: float
+    day: int
+    sign: int
+
+
+@dataclass(frozen=True)
+class CapacityFilter:
+    est: float
+    var: float
+    candidate: Candidate | None = None
+
+
+def _clipped(f: CapacityFilter) -> tuple[CapacityFilter, bool]:
+    lo, hi = CAPACITY_BOUNDS
+    est = min(hi, max(lo, f.est))
+    return CapacityFilter(est, f.var, f.candidate), est != f.est
+
+
+def filter_predict(f: CapacityFilter, drift: float, process_var: float) -> tuple[CapacityFilter, bool]:
+    """Daily prediction step: expected fade and process noise; returns the filter and whether it was clipped."""
+    return _clipped(CapacityFilter(f.est - drift, f.var + process_var, f.candidate))
+
+
+def filter_update(f: CapacityFilter, z: float, r: float, day: int) -> tuple[CapacityFilter, str, bool]:
+    """Measurement update with two-sample step confirmation.
+
+    Returns the filter, the event ("update", "held" or "jump") and whether the estimate was clipped.
+    """
+    nu = (z - f.est) / math.sqrt(f.var + r)
+    cand = f.candidate if f.candidate and day - f.candidate.day <= CANDIDATE_LIFETIME_DAYS else None
+    if abs(nu) <= JUMP_SIGMAS:
+        est, var = kalman_update(f.est, f.var, z, r)
+        new, clipped = _clipped(CapacityFilter(est, var))
+        return new, "update", clipped
+    sign = 1 if nu > 0 else -1
+    if cand and cand.sign == sign and abs(z - cand.z) <= CONFIRM_SIGMAS * math.sqrt(cand.r + r):
+        w1, w2 = 1.0 / cand.r, 1.0 / r
+        est = (cand.z * w1 + z * w2) / (w1 + w2)
+        new, clipped = _clipped(CapacityFilter(est, max(1.0 / (w1 + w2), JUMP_RESET_SIGMA**2)))
+        return new, "jump", clipped
+    return CapacityFilter(f.est, f.var, Candidate(z, r, day, sign)), "held", False
 
 
 _TOTALS = (
@@ -197,6 +249,7 @@ class _State:
         self.cap = pack.initial_capacity
         self.energy = self.cap * pack.nominal_kwh
         self.est, self.var = sensing.prior_capacity, sensing.prior_sigma**2
+        self.candidate: Candidate | None = None
         self.soc_est = 1.0
         self.last_anchor, self.anchor_soc, self.min_soc = "F", 1.0, 1.0
         self.empty_armed, self.was_full = True, True
@@ -215,7 +268,9 @@ class _State:
         self.initial_energy = self.energy
         self.initial_cold = 0.0
         self.totals = dict.fromkeys(_TOTALS, 0.0)
-        self.counts = dict.fromkeys(("pairs", "partials", "empties", "probes", "hot_hours", "infeasible"), 0)
+        self.counts = dict.fromkeys(
+            ("pairs", "partials", "empties", "probes", "hot_hours", "infeasible", "held", "jumps", "clips"), 0
+        )
 
 
 def simulate(
@@ -288,8 +343,11 @@ def _month(abs_hour: int) -> int:
 
 def _start_day(s: _State, farm: Farm, sensing: Sensing, day: int, abs_hour: int) -> None:
     s.day = day
-    s.est -= sensing.drift_per_day
-    s.var += sensing.process_sigma_per_day**2
+    f, clipped = filter_predict(
+        CapacityFilter(s.est, s.var, s.candidate), sensing.drift_per_day, sensing.process_sigma_per_day**2
+    )
+    s.est, s.var, s.candidate = f.est, f.var, f.candidate
+    s.counts["clips"] += clipped
     err = s.est - s.cap
     s.errors.append(err)
     if s.step_day is not None and s.detect_days is None and abs(err) < DETECT_TOLERANCE:
@@ -489,7 +547,7 @@ def _observe(s: _State, pack: Pack, sensing: Sensing, rng: random.Random) -> Non
             _sample_pair(s, sensing, rng, span=1.0 - s.anchor_soc)
         elif s.min_soc <= PARTIAL_START_SOC and sensing.partial_sigma is not None:
             z = s.cap * (1.0 + sensing.gain_error) * (1.0 + rng.gauss(0.0, sensing.partial_sigma))
-            s.est, s.var = kalman_update(s.est, s.var, z, sensing.partial_sigma**2)
+            _measure(s, z, sensing.partial_sigma**2)
             s.counts["partials"] += 1
         s.last_anchor, s.min_soc, s.soc_est = "F", 1.0, 1.0
     s.was_full = is_full
@@ -498,9 +556,17 @@ def _observe(s: _State, pack: Pack, sensing: Sensing, rng: random.Random) -> Non
 def _sample_pair(s: _State, sensing: Sensing, rng: random.Random, span: float) -> None:
     sigma = sensing.pair_sigma * 0.9 / max(span, 0.3)
     z = s.cap * (1.0 + sensing.gain_error) * (1.0 + rng.gauss(0.0, sigma))
-    s.est, s.var = kalman_update(s.est, s.var, z, sigma**2)
+    _measure(s, z, sigma**2)
     s.counts["pairs"] += 1
     s.last_pair_day = s.day
+
+
+def _measure(s: _State, z: float, r: float) -> None:
+    f, event, clipped = filter_update(CapacityFilter(s.est, s.var, s.candidate), z, r, s.day)
+    s.est, s.var, s.candidate = f.est, f.var, f.candidate
+    s.counts["held"] += event == "held"
+    s.counts["jumps"] += event == "jump"
+    s.counts["clips"] += clipped
 
 
 def _result(s: _State) -> Result:
@@ -539,4 +605,7 @@ def _result(s: _State) -> Result:
         tank_drawn_kwh=s.totals["from_tank"],
         final_tank_kwh=s.tank,
         infeasible_horizons=s.counts["infeasible"],
+        held_outliers=s.counts["held"],
+        confirmed_jumps=s.counts["jumps"],
+        estimate_clips=s.counts["clips"],
     )

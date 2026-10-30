@@ -55,11 +55,6 @@ def test_kalman_update_moves_estimate_towards_measurement_and_shrinks_variance()
     assert var < 0.01**2
 
 
-def test_kalman_update_reopens_filter_on_implausible_jump():
-    est, _ = kalman_update(est=1.0, var=0.005**2, z=0.8, r=0.01**2)
-    assert est < 0.85
-
-
 def test_energy_balance_closes_for_every_load_class():
     res = simulate(sunny_site(), small_farm(), Pack(nominal_kwh=15), Sensing(), Policy(), seed=1)
     assert res.served_kwh + res.unmet_critical_kwh + res.unmet_noncritical_kwh == pytest.approx(res.demand_kwh)
