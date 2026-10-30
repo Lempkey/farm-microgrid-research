@@ -11,7 +11,8 @@ pack reaches the informative low end, so the next full charge yields a capacity 
 Learning: a scalar Kalman filter on capacity (fraction of nominal), fed by full-empty pairs (noise
 calibrated to field data; see field_capacity/) and optionally by partial-charge estimates of noise `partial_sigma`.
 A sample more than 4 sigma off is held, not used; a second consistent one within 30 days confirms a step and
-resets the filter (`filter_update`). The estimate stays within physical bounds.
+resets the filter (`filter_update`); a weaker sample consistent with the held one keeps it pending. The
+estimate stays within physical bounds.
 """
 
 from __future__ import annotations
@@ -227,19 +228,29 @@ def filter_predict(f: CapacityFilter, drift: float, process_var: float) -> tuple
     return _clipped(CapacityFilter(f.est - drift, f.var + process_var, f.candidate))
 
 
+def _consistent(cand: Candidate, z: float, r: float) -> bool:
+    return abs(z - cand.z) <= CONFIRM_SIGMAS * math.sqrt(cand.r + r)
+
+
 def filter_update(f: CapacityFilter, z: float, r: float, day: int) -> tuple[CapacityFilter, str, bool]:
     """Measurement update with two-sample step confirmation.
 
-    Returns the filter, the event ("update", "held" or "jump") and whether the estimate was clipped.
+    A sample within 4 sigma is a standard update. It keeps a pending candidate when it points the same way
+    from the estimate and lies within 3 sigma of it (amendment A3.1, adopted after the pre-registered rule,
+    which discarded the candidate, delayed step detection with noisy partial-charge samples). It never
+    confirms a step by itself: only a second outlier does. Returns the filter, the event ("update", "held"
+    or "jump") and whether the estimate was clipped.
     """
     nu = (z - f.est) / math.sqrt(f.var + r)
     cand = f.candidate if f.candidate and day - f.candidate.day <= CANDIDATE_LIFETIME_DAYS else None
     if abs(nu) <= JUMP_SIGMAS:
         est, var = kalman_update(f.est, f.var, z, r)
-        new, clipped = _clipped(CapacityFilter(est, var))
+        agrees = cand is not None and (z - f.est) * cand.sign > 0 and _consistent(cand, z, r)
+        keep = cand if agrees else None  # amendment A3.1: same direction and close to the candidate
+        new, clipped = _clipped(CapacityFilter(est, var, keep))
         return new, "update", clipped
     sign = 1 if nu > 0 else -1
-    if cand and cand.sign == sign and abs(z - cand.z) <= CONFIRM_SIGMAS * math.sqrt(cand.r + r):
+    if cand and cand.sign == sign and _consistent(cand, z, r):
         w1, w2 = 1.0 / cand.r, 1.0 / r
         est = (cand.z * w1 + z * w2) / (w1 + w2)
         new, clipped = _clipped(CapacityFilter(est, max(1.0 / (w1 + w2), JUMP_RESET_SIGMA**2)))
