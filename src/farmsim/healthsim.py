@@ -119,6 +119,20 @@ class Result:
     degree_hours_above_max: float = 0.0
     precool_kwh: float = 0.0
     spill_pumped_kwh: float = 0.0
+    # energy accounting, for conservation checks: AC/DC side, battery, cold room, tank
+    pv_kwh: float = 0.0
+    battery_in_kwh: float = 0.0  # drawn from the bus to charge, before losses
+    battery_out_kwh: float = 0.0  # delivered to the bus, after losses
+    spilled_kwh: float = 0.0  # PV nothing could use
+    fade_clipped_kwh: float = 0.0  # stored energy lost when capacity fell below it
+    initial_energy_kwh: float = 0.0
+    final_energy_kwh: float = 0.0
+    compressor_kwh: float = 0.0  # electric, cooling plus pre-cooling
+    cold_leak_kwh_th: float = 0.0
+    initial_cold_kwh_th: float = 0.0
+    final_cold_kwh_th: float = 0.0
+    tank_drawn_kwh: float = 0.0
+    final_tank_kwh: float = 0.0
 
 
 def cycle_wear(soc_before: float, soc_after: float, fade_per_full_cycle: float, exponent: float) -> float:
@@ -147,6 +161,12 @@ def kalman_update(est: float, var: float, z: float, r: float) -> tuple[float, fl
     return est + gain * innov, (1.0 - gain) * var
 
 
+_TOTALS = (
+    "demand", "served", "unmet_c", "unmet_nc", "pumped", "degree_hours", "precool", "spill_pump",
+    "pv", "batt_in", "batt_out", "spilled", "fade_clip", "compressor", "leak", "from_tank",
+)  # fmt: skip
+
+
 class _State:
     """Mutable accumulator for the hot loop; never escapes `simulate`."""
 
@@ -169,9 +189,9 @@ class _State:
         self.detect_days: float | None = None
         self.errors: list[float] = []
         self.cold = 0.0
-        self.totals = dict.fromkeys(
-            ("demand", "served", "unmet_c", "unmet_nc", "pumped", "degree_hours", "precool", "spill_pump"), 0.0
-        )
+        self.initial_energy = self.energy
+        self.initial_cold = 0.0
+        self.totals = dict.fromkeys(_TOTALS, 0.0)
         self.counts = dict.fromkeys(("pairs", "partials", "empties", "probes", "hot_hours"), 0)
 
 
@@ -187,7 +207,7 @@ def simulate(
 ) -> Result:
     rng = random.Random(seed)
     s = _State(pack, sensing)
-    s.cold = farm.cold_room.q_set if farm.cold_room else 0.0
+    s.cold = s.initial_cold = farm.cold_room.q_set if farm.cold_room else 0.0
     n = len(site.pv_kw_per_kwp)
     hours = n if hours is None else hours
     climatology = _climatology(site) if policy.forecast_climatology else None
@@ -254,6 +274,7 @@ def _start_day(s: _State, farm: Farm, sensing: Sensing, day: int, abs_hour: int)
     need = farm.irrigation_kwh[_month(abs_hour)]
     from_tank = min(need, s.tank)
     s.tank -= from_tank
+    s.totals["from_tank"] += from_tank
     s.irrigation_left = need - from_tank
 
 
@@ -263,7 +284,9 @@ def _apply_ageing(s: _State, pack: Pack, ambient_c: float, step: int) -> None:
     if pack.step_hour is not None and not s.stepped and step >= pack.step_hour:
         s.cap -= pack.step_loss
         s.stepped, s.step_day = True, step // HOURS_PER_DAY
-    s.energy = min(s.energy, s.cap * pack.nominal_kwh)
+    clipped = max(0.0, s.energy - s.cap * pack.nominal_kwh)
+    s.energy -= clipped
+    s.totals["fade_clip"] += clipped
 
 
 def _controller_capacity(s: _State, policy: Policy) -> float:
@@ -326,15 +349,18 @@ def _dispatch(
     surplus = pv - critical - nc_served - pump
     soc_before = s.energy / (s.cap * pack.nominal_kwh)
     curtailed = 0.0
+    s.totals["pv"] += pv
     if surplus >= 0:
         stored = min(surplus * eta, s.cap * pack.nominal_kwh - s.energy)
         s.energy += stored
+        s.totals["batt_in"] += stored / eta
         curtailed = surplus - stored / eta
         shortfall = 0.0
     else:
         available = max(0.0, s.energy - pack.floor_soc * s.cap * pack.nominal_kwh) * eta
         delivered = min(-surplus, available)
         s.energy -= delivered / eta
+        s.totals["batt_out"] += delivered
         shortfall = -surplus - delivered
     soc_after = s.energy / (s.cap * pack.nominal_kwh)
     if soc_after < soc_before:
@@ -351,6 +377,8 @@ def _dispatch(
     s.totals["unmet_nc"] += noncritical - nc_served + nc_cut
     if room:
         _use_surplus(s, farm, room, policy, ambient, critical - shortfall, curtailed, pump + irrigation)
+    else:
+        s.totals["spilled"] += curtailed
 
     measured = (soc_after - soc_before) * s.cap * (1.0 + sensing.gain_error)
     s.soc_est = min(1.0, max(0.0, s.soc_est + measured / _controller_capacity(s, policy)))
@@ -378,7 +406,11 @@ def _use_surplus(
     s.totals["pumped"] += spill_pump
     s.totals["spill_pump"] += spill_pump
     s.totals["precool"] += precool
-    s.cold += (cooling + precool) * room.cop - leak_kwh(room, ambient, s.cold)
+    s.totals["spilled"] += curtailed - precool - spill_pump
+    s.totals["compressor"] += cooling + precool
+    leak = leak_kwh(room, ambient, s.cold)
+    s.totals["leak"] += leak
+    s.cold += (cooling + precool) * room.cop - leak
     temp = temperature(room, s.cold)
     if temp > room.t_max:
         s.counts["hot_hours"] += 1
@@ -468,4 +500,17 @@ def _result(s: _State) -> Result:
         degree_hours_above_max=s.totals["degree_hours"],
         precool_kwh=s.totals["precool"],
         spill_pumped_kwh=s.totals["spill_pump"],
+        pv_kwh=s.totals["pv"],
+        battery_in_kwh=s.totals["batt_in"],
+        battery_out_kwh=s.totals["batt_out"],
+        spilled_kwh=s.totals["spilled"],
+        fade_clipped_kwh=s.totals["fade_clip"],
+        initial_energy_kwh=s.initial_energy,
+        final_energy_kwh=s.energy,
+        compressor_kwh=s.totals["compressor"],
+        cold_leak_kwh_th=s.totals["leak"],
+        initial_cold_kwh_th=s.initial_cold,
+        final_cold_kwh_th=s.cold,
+        tank_drawn_kwh=s.totals["from_tank"],
+        final_tank_kwh=s.tank,
     )
