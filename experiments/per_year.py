@@ -1,9 +1,11 @@
 """Experiments 2, 2b and 3 re-run per weather year (2001-2024) and in four 5-year windows.
 
 Each calendar year is a separate 1-year run from 1 January, with a full pack and the controller's prior;
-seeds vary the forecast noise and pack draws and are averaged within the year at analysis. The used pack's
-module loss falls in years 2-4 of a run, so it never happens in a 1-year run. The four non-overlapping
-5-year windows (2001-05, 2006-10, 2011-15, 2016-20) carry wear over 5 years and the module loss. Policies,
+seeds vary the forecast noise and pack draws and are averaged within the year at analysis. In annual runs
+the used pack is an *initially degraded pack*: its module loss is switched off explicitly (in 5-year runs
+it falls in years 2-4). The four non-overlapping 5-year windows (2001-05, 2006-10, 2011-15, 2016-20)
+carry wear over 5 years and the module loss. Years are separate experimental units but consecutive
+observations of one climate record, not independent draws. Policies,
 packs and margins are exactly those of the original experiments.
 
 Usage: python experiments/per_year.py <power_json_dir> <out.json> [seeds]
@@ -80,6 +82,8 @@ def run(site: Site, cfg: dict, unit: dict, seed: int) -> dict:
         farm, battery = FARMS[cfg["farm"]], BATTERY_KWH[cfg["farm"]]
         policy = (EXP2_POLICIES if cfg["exp"] == "2" else EXP2B_POLICIES)[cfg["policy"]]
     pack, sensing = pack_and_sensing(cfg["pack"], battery, run_seed, PARTIAL_SIGMA)
+    if unit["unit"] == "year":  # an annual run is an initially degraded pack: no module loss, by design
+        pack = replace(pack, step_hour=None, step_loss=0.0)
     res = simulate(site, farm, pack, sensing, policy, unit["hours"], unit["start"], run_seed)
     kept = {k: getattr(res, k) for k in KEEP}
     return {**cfg, "unit": unit["unit"], "year": unit["year"], "n_years": unit["n_years"], "seed": seed, **kept}
