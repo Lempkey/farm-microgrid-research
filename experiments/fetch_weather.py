@@ -1,4 +1,4 @@
-"""Download NASA POWER hourly irradiance and temperature (2015-2024) for the experiments.
+"""Download NASA POWER hourly irradiance and temperature (2001-2024) for the experiments.
 
 Usage: python experiments/fetch_weather.py <out_dir> [latitude] [longitude]
 Default point: Valencia area, Venezuela (10.16 N, 68.00 W). Solar data come from CERES SYN1deg on a 1 degree
@@ -14,7 +14,7 @@ URL = (
     "https://power.larc.nasa.gov/api/temporal/hourly/point?parameters=ALLSKY_SFC_SW_DWN,T2M&community=RE"
     "&longitude={lon}&latitude={lat}&start={year}0101&end={year}1231&format=JSON&time-standard=LST"
 )
-YEARS = range(2015, 2025)
+YEARS = range(2001, 2025)  # POWER hourly starts on 1 January 2001
 PAUSE_S = 2  # be polite to the public API
 
 

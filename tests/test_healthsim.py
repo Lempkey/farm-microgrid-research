@@ -13,10 +13,12 @@ from farmsim.healthsim import (
     Site,
     cycle_wear,
     kalman_update,
+    months_from_timestamps,
     probe_pump_kwh,
     required_energy,
     rng_stream,
     simulate,
+    site_month,
 )
 
 DAYS = 24
@@ -251,3 +253,26 @@ def test_probe_forecast_draws_do_not_change_measurement_noise():
     assert drawing.probes == 0
     assert drawing.pair_samples == plain.pair_samples > 20
     assert drawing.final_abs_error == plain.final_abs_error
+
+
+def test_months_come_from_the_timestamps_so_leap_days_do_not_shift_them():
+    month_days = ((2, 29), (12, 31))
+    keys = [f"2024{m:02d}{d:02d}{h:02d}" for m, days in month_days for d in range(1, days + 1) for h in range(24)]
+    months = months_from_timestamps(keys)
+    assert months[0] == 1 and months[29 * 24 - 1] == 1  # 29 February is still February
+    assert months[-1] == 11
+
+
+def test_site_month_uses_the_calendar_when_given_and_a_365_day_year_otherwise():
+    plain = dark_site(days=366)
+    assert site_month(plain, 365 * 24) == 0  # the old approximation: day 365 wraps to January
+    calendar = Site(plain.pv_kw_per_kwp, plain.ambient_c, month_of_hour=tuple([0] * 365 * 24 + [11] * 24))
+    assert site_month(calendar, 365 * 24) == 11
+
+
+def test_daily_irrigation_follows_the_calendar_month():
+    site = dark_site(days=2)
+    farm = Farm(pv_kwp=1, critical_kw=0, household_kw=tuple([0.0] * 24), irrigation_kwh=tuple([1.0] * 11 + [9.0]))
+    december = Site(site.pv_kw_per_kwp, site.ambient_c, month_of_hour=tuple([11] * 48))
+    r = simulate(december, farm, Pack(nominal_kwh=10), Sensing(), Policy())
+    assert r.demand_kwh == pytest.approx(18.0)

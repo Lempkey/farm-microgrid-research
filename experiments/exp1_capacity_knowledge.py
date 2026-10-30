@@ -11,7 +11,7 @@ import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from common import BATTERY_KWH, FARMS, MAX_WORKERS, YEARS, H, load_site, pack_and_sensing
+from common import BATTERY_KWH, FARMS, MAX_WORKERS, load_site, pack_and_sensing, run_window
 
 from farmsim.healthsim import Policy, Site, simulate
 
@@ -29,8 +29,8 @@ PARTIAL = {"2pp": 0.02, "4pp": 0.04, "8pp": 0.08, "none": None}
 def run_one(args: tuple) -> dict:
     site, farm_key, pack_kind, partial_key, policy_key, seed = args
     pack, sensing = pack_and_sensing(pack_kind, BATTERY_KWH[farm_key], seed, PARTIAL[partial_key])
-    start = (seed % 10) * H
-    res = simulate(site, FARMS[farm_key], pack, sensing, POLICIES[policy_key], YEARS * H, start, seed)
+    start, hours = run_window(site, seed)
+    res = simulate(site, FARMS[farm_key], pack, sensing, POLICIES[policy_key], hours, start, seed)
     return dict(farm=farm_key, pack=pack_kind, partial=partial_key, policy=policy_key, seed=seed, **res.__dict__)
 
 

@@ -10,7 +10,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
-from common import BATTERY_KWH, FARMS, MAX_WORKERS, YEARS, H, load_site, pack_and_sensing
+from common import BATTERY_KWH, FARMS, MAX_WORKERS, load_site, pack_and_sensing, run_window
 
 from farmsim.coldroom import ColdRoom
 from farmsim.healthsim import Policy, Site, simulate
@@ -45,7 +45,8 @@ def _worker(args: tuple) -> dict:
     farm = replace(FARMS["base"], critical_kw=0.0, cold_room=ROOMS["produce" if big else room_key])
     battery = BATTERY_KWH["base"] + (EXTRA_BATTERY_KWH if big else 0.0)
     pack, sensing = pack_and_sensing(pack_kind, battery, seed, 0.04)
-    res = simulate(_SITE, farm, pack, sensing, policy(family, margin), YEARS * H, (seed % 10) * H, seed)
+    start, hours = run_window(_SITE, seed)
+    res = simulate(_SITE, farm, pack, sensing, policy(family, margin), hours, start, seed)
     return dict(pack=pack_kind, room=room_key, family=family, margin=margin, seed=seed, **res.__dict__)
 
 

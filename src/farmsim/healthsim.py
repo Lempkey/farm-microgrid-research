@@ -46,6 +46,7 @@ STREAM_SETUP, STREAM_FORECAST, STREAM_PROBE, STREAM_MEASURE = 0, 1, 2, 3
 class Site:
     pv_kw_per_kwp: tuple[float, ...]  # hourly output per kWp, system losses included
     ambient_c: tuple[float, ...]
+    month_of_hour: tuple[int, ...] | None = None  # 0-11 from the timestamps; None: a 365-day year from hour 0
 
 
 @dataclass(frozen=True)
@@ -304,7 +305,7 @@ def simulate(
         day = step // HOURS_PER_DAY
         s.step = step
         if hour == 0:
-            _start_day(s, farm, sensing, day, start_hour + step)
+            _start_day(s, farm, sensing, day, site_month(site, t))
         _apply_ageing(s, pack, site.ambient_c[t], step)
         if policy.forecast_reserve and (step == 0 or hour == NIGHT_START):
             _issue_forecast(s, site, policy, forecast_rng, t, climatology)
@@ -321,7 +322,7 @@ def _climatology(site: Site) -> list[list[float]]:
     sums = [[0.0] * HOURS_PER_DAY for _ in range(12)]
     counts = [[0] * HOURS_PER_DAY for _ in range(12)]
     for i, pv in enumerate(site.pv_kw_per_kwp):
-        m, h = _month(i), i % HOURS_PER_DAY
+        m, h = site_month(site, i), i % HOURS_PER_DAY
         sums[m][h] += pv
         counts[m][h] += 1
     return [[sums[m][h] / max(1, counts[m][h]) for h in range(HOURS_PER_DAY)] for m in range(12)]
@@ -340,17 +341,25 @@ def _issue_forecast(
         haircut = math.exp(-policy.forecast_pessimism_z * sigmas[lead])
         i = (t + k) % n
         if climatology is not None:
-            fc.append(climatology[_month(i)][i % HOURS_PER_DAY] * haircut)
+            fc.append(climatology[site_month(site, i)][i % HOURS_PER_DAY] * haircut)
         else:
             fc.append(site.pv_kw_per_kwp[i] * factors[lead] * haircut)
     s.forecast, s.forecast_start = fc, s.step
 
 
-def _month(abs_hour: int) -> int:
-    return (abs_hour // HOURS_PER_DAY % 365) * 12 // 365
+def months_from_timestamps(keys: list[str]) -> tuple[int, ...]:
+    """Calendar month (0-11) of each hourly `YYYYMMDDHH` timestamp."""
+    return tuple(int(k[4:6]) - 1 for k in keys)
 
 
-def _start_day(s: _State, farm: Farm, sensing: Sensing, day: int, abs_hour: int) -> None:
+def site_month(site: Site, i: int) -> int:
+    """Month of site hour `i`: from the calendar when the site has one, else a 365-day year from hour 0."""
+    if site.month_of_hour is not None:
+        return site.month_of_hour[i % len(site.month_of_hour)]
+    return (i // HOURS_PER_DAY % 365) * 12 // 365
+
+
+def _start_day(s: _State, farm: Farm, sensing: Sensing, day: int, month: int) -> None:
     s.day = day
     f, clipped = filter_predict(
         CapacityFilter(s.est, s.var, s.candidate), sensing.drift_per_day, sensing.process_sigma_per_day**2
@@ -361,7 +370,7 @@ def _start_day(s: _State, farm: Farm, sensing: Sensing, day: int, abs_hour: int)
     s.errors.append(err)
     if s.step_day is not None and s.detect_days is None and abs(err) < DETECT_TOLERANCE:
         s.detect_days = day - s.step_day
-    need = farm.irrigation_kwh[_month(abs_hour)]
+    need = farm.irrigation_kwh[month]
     from_tank = min(need, s.tank)
     s.tank -= from_tank
     s.totals["from_tank"] += from_tank
