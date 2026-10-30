@@ -32,6 +32,10 @@ uv run python experiments/fetch_weather.py data/power
 # Experiments use 4 worker processes by default; set MAX_WORKERS to change that
 uv run python experiments/exp2_need_sized_reserve.py data/power 20 data/exp2_rows.json
 uv run python experiments/summarise_exp2.py data/exp2_rows.json
+
+# Experiments 2, 2b and 3 per weather year, 2001-2024 (about 30 min on 4 workers)
+uv run python experiments/per_year.py data/power data/per_year_rows.json
+uv run python experiments/summarise_per_year.py data/per_year_rows.json results/per_year_2001_2024.md
 ```
 
 One 5-year run takes about 0.05 s with a fixed reserve, 0.4 s with the need-sized reserve and 0.7 s
@@ -48,16 +52,23 @@ Each experiment's decision rule was written down before its results were seen.
 | Experiment | Question | Result so far (placeholder loads, one site) |
 |---|---|---|
 | 1. `exp1_capacity_knowledge.py` | Does knowing the battery's true capacity improve dispatch? Does deliberately probing it pay? | Barely: ≤ 2% change in unmet critical load (1.9% at most, re-run after the October 2026 audit fixes; `gate_c100.py`). Probing costs more than it gains. |
-| 2. `exp2_need_sized_reserve.py`, `exp2b_forecast_value.py` | Does a reserve sized to the coming days' need beat a fixed reserve? How much of that comes from the forecast? | A need-sized reserve beats the fixed-reserve frontier by 27–67%. Forecasts add 5–15% over climatology. |
-| 3. `exp3_multi_store.py` | Does planning across battery, cold room and water tank beat battery-only protection? | Yes, mostly by pumping water with surplus PV, which is good practice already. Pre-cooling alone gives 14–31%. An idealised 4 °C PCM bank beats an equivalent battery by 51–78%. Absolute effects are small at this sizing. |
+| 2. `exp2_need_sized_reserve.py`, `exp2b_forecast_value.py` | Does a reserve sized to the coming days' need beat a fixed reserve? How much of that comes from the forecast? | Generally yes. With a realistic forecast it cuts unmet critical load by about 3–5 kWh/yr against the best fixed reserve at equal unmet other load: roughly 40% on common support (37%, interval 32–47%, new pack; 41%, 35–51%, initially degraded pack). It is better in 20 of 24 years for a new pack (the fixed reserve wins in 2, 2 are ties) and in all 24 for a degraded one. Over 5-year windows that include a module loss it gains 59–71% (14–22 kWh/yr). Perfect weather beats climatology by only 12–13%; the pre-registered bar for forecast value (≥ 40%) is not met. |
+| 3. `exp3_multi_store.py` | Does planning across battery, cold room and water tank beat battery-only protection? | Yes, mostly by pumping water with surplus PV, which is good practice already: it dominates the battery-only frontier in 19 (new pack) and 22 (degraded pack) of 24 years and ties in the rest. Pre-cooling alone gives 17–19% fewer hours above 8 °C on common support. **A 6 kWh_th PCM bank against a battery 3 kWh larger is a trade-off:** in the 15 years where their frontiers overlap it cut overheating by roughly two-thirds (62–70% on common support; better in 10 and tied in 5 for a new pack, better in 14 and tied in 1 for a degraded one); in the other 9 neither cold room overheated and the larger battery served more household and irrigation load. Absolute effects are small at this sizing. |
 
 **Read the results with care:**
 
 - **Comparisons are frontier against frontier.** Each policy is swept over safety margins and
   compared at equal unmet non-critical load.
-- **Seeds are not independent.** Simulations start on 1 January of year `seed % 10` of 2015–2024
-  and run 5 calendar years, so 20 seeds cover only **10 overlapping weather windows**. Experiments 2
-  and 3 are due a re-run with per-year statistics over 2001–2024.
+- **Experiments 2 and 3 are per weather year.** Each year of 2001–2024 is a separate 1-year run
+  (10 seeds averaged within the year). The years are consecutive observations of one climate record,
+  not independent draws, so intervals come from a circular block bootstrap that resamples all years in
+  order. Every year is categorised (better, tied or worse on common support; dominates; dominated);
+  percentages are **conditional on common support** (`results/per_year_2001_2024.md`).
+- **"Initially degraded pack".** In annual runs the used pack starts degraded but never loses its
+  module (switched off; in 5-year runs it happens in years 2–4). Wear and the module loss come from four
+  non-overlapping 5-year windows, shown individually without intervals.
+- **Experiment 1's seeds are not independent.** Its runs start on 1 January of year `seed % 10` of
+  2015–2024 and run 5 calendar years, so 20 seeds cover only **10 overlapping weather windows**.
 - **Weather is regional.** NASA POWER solar data sit on a 1° grid, so they are not a site
   measurement.
 
