@@ -5,6 +5,7 @@ All farm, pack and sensing numbers are placeholders, not measurements of a real 
 
 import json
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from farmsim.healthsim import STREAM_SETUP, Farm, Pack, Sensing, Site, months_from_timestamps, rng_stream
@@ -26,15 +27,40 @@ FARMS = {
 BATTERY_KWH = {"base": 25.0, "tight": 16.0}
 
 
+GHI, T2M = "ALLSKY_SFC_SW_DWN", "T2M"
+FILL_VALUE_BELOW = -100  # NASA POWER marks missing data as -999
+
+
+class IncompleteWeather(ValueError):
+    pass
+
+
+def validated_year(year: int, parameter: dict) -> tuple[list[str], list[float], list[float]]:
+    """Timestamps, GHI and temperature of one year, refused unless every hour of the year is present once."""
+    if set(parameter[GHI]) != set(parameter[T2M]):
+        raise IncompleteWeather(f"{year}: GHI and temperature timestamps differ")
+    keys = sorted(parameter[GHI])
+    start, end = datetime(year, 1, 1), datetime(year + 1, 1, 1)
+    hours = int((end - start) / timedelta(hours=1))
+    if len(keys) != hours:
+        raise IncompleteWeather(f"{year}: {len(keys)} hours, expected {hours}")
+    if keys != [(start + timedelta(hours=h)).strftime("%Y%m%d%H") for h in range(hours)]:
+        raise IncompleteWeather(f"{year}: timestamps are not the hours of {year}")
+    ghi, temp = [parameter[GHI][k] for k in keys], [parameter[T2M][k] for k in keys]
+    bad = [k for k, g, t in zip(keys, ghi, temp, strict=True) if g < FILL_VALUE_BELOW or t < FILL_VALUE_BELOW]
+    if bad:
+        raise IncompleteWeather(f"{year}: {len(bad)} hours carry the fill value, first {bad[0]}")
+    return keys, ghi, temp
+
+
 def load_site(folder: Path, years: range = BASE_YEARS) -> Site:
     pv, temp, keys = [], [], []
     for year in years:
-        p = json.loads((folder / f"p{year}.json").read_text())["properties"]["parameter"]
-        for key in sorted(p["ALLSKY_SFC_SW_DWN"]):
-            g, t = p["ALLSKY_SFC_SW_DWN"][key], p["T2M"][key]
-            pv.append(max(g, 0.0) / 1000 * PERFORMANCE_RATIO)
-            temp.append(t if t > -100 else 26.0)
-            keys.append(key)
+        parameter = json.loads((folder / f"p{year}.json").read_text())["properties"]["parameter"]
+        k, g, t = validated_year(year, parameter)
+        keys += k
+        pv += [max(x, 0.0) / 1000 * PERFORMANCE_RATIO for x in g]
+        temp += t
     return Site(pv_kw_per_kwp=tuple(pv), ambient_c=tuple(temp), month_of_hour=months_from_timestamps(keys))
 
 
