@@ -106,3 +106,39 @@ def test_estimate_is_clipped_to_physical_bounds_after_updates_jumps_and_predicti
     f, clipped = filter_predict(CapacityFilter(est=lo + 0.001, var=R), drift=0.01, process_var=0.0)
     assert clipped
     assert f.est == lo
+
+
+# Amendment A3.1 (post hoc, 30 October 2026): a sub-threshold sample consistent with the candidate keeps it.
+
+PARTIAL_R = 0.04**2
+
+
+def test_weak_sample_consistent_with_the_candidate_keeps_it_so_the_next_outlier_confirms():
+    f, _, _ = filter_update(CONVERGED, z=0.75, r=R, day=10)
+    f, event, _ = filter_update(f, z=0.80, r=PARTIAL_R, day=11)  # below 4 sigma only because it is noisy
+    assert event == "update"
+    assert f.candidate is not None and f.candidate.z == 0.75
+    assert f.est < CONVERGED.est  # it still updates normally
+    f, event, _ = filter_update(f, z=0.752, r=R, day=12)
+    assert event == "jump"
+    assert f.est == pytest.approx(0.751)
+
+
+def test_weak_same_direction_noise_alone_never_confirms_a_step():
+    f, _, _ = filter_update(CONVERGED, z=0.75, r=R, day=0)
+    events = []
+    for day in range(2, 30, 3):
+        f, event, _ = filter_update(f, z=0.85, r=PARTIAL_R, day=day)
+        events.append(event)
+    assert set(events) == {"update"}
+    assert f.candidate is not None
+    f, event, _ = filter_update(f, z=0.85, r=PARTIAL_R, day=40)  # first outlier has expired
+    assert event == "update"
+    assert f.candidate is None
+
+
+def test_weak_sample_inconsistent_with_the_candidate_still_discards_it():
+    f, _, _ = filter_update(CONVERGED, z=0.75, r=R, day=10)
+    f, event, _ = filter_update(f, z=0.92, r=PARTIAL_R, day=11)  # 17 pp from the candidate
+    assert event == "update"
+    assert f.candidate is None
